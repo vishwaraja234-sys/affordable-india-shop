@@ -1,0 +1,943 @@
+*** Begin Patch
+*** Add File: ecom-backend/package.json
++{
++  "name": "affordable-india-backend",
++  "version": "1.0.0",
++  "main": "dist/server.js",
++  "scripts": {
++    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
++    "build": "tsc",
++    "start": "node dist/server.js",
++    "lint": "eslint . --ext .ts"
++  },
++  "dependencies": {
++    "bcrypt": "^5.1.0",
++    "cors": "^2.8.5",
++    "dotenv": "^16.3.1",
++    "express": "^4.18.2",
++    "jsonwebtoken": "^9.0.0",
++    "mongoose": "^7.3.1",
++    "morgan": "^1.10.0",
++    "stripe": "^12.13.0"
++  },
++  "devDependencies": {
++    "@types/bcrypt": "^5.0.0",
++    "@types/express": "^4.17.17",
++    "@types/jsonwebtoken": "^9.0.1",
++    "@types/morgan": "^1.9.4",
++    "ts-node": "^10.9.1",
++    "ts-node-dev": "^2.0.0",
++    "typescript": "^5.2.2"
++  }
++}
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/tsconfig.json
++{
++  "compilerOptions": {
++    "target": "ES2020",
++    "module": "commonjs",
++    "outDir": "dist",
++    "rootDir": "src",
++    "esModuleInterop": true,
++    "strict": true,
++    "skipLibCheck": true,
++    "resolveJsonModule": true,
++    "forceConsistentCasingInFileNames": true,
++    "types": ["node", "express"]
++  },
++  "include": ["src"]
++}
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/server.ts
++import dotenv from "dotenv";
++dotenv.config();
++
++import app from "./app";
++import connectDB from "./config/db";
++
++const port = process.env.PORT || 4000;
++
++connectDB()
++  .then(() => {
++    app.listen(port, () => {
++      console.log(`Backend listening on http://localhost:${port}`);
++    });
++  })
++  .catch((err) => {
++    console.error("Failed to connect to DB:", err);
++    process.exit(1);
++  });
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/app.ts
++import express from "express";
++import cors from "cors";
++import helmet from "helmet";
++import morgan from "morgan";
++import bodyParser from "body-parser";
++import authRoutes from "./routes/authRoutes";
++import productRoutes from "./routes/productRoutes";
++import cartRoutes from "./routes/cartRoutes";
++import orderRoutes from "./routes/orderRoutes";
++import webhookRoutes from "./routes/webhookRoutes";
++
++const app = express();
++
++app.use(helmet());
++app.use(cors());
++app.use(morgan("dev"));
++
++// raw body for Stripe webhook signature verification
++app.use(
++  "/webhook",
++  bodyParser.raw({ type: "application/json" })
++);
++
++// JSON parser for regular routes
++app.use(express.json());
++
++app.use("/api/auth", authRoutes);
++app.use("/api/products", productRoutes);
++app.use("/api/cart", cartRoutes);
++app.use("/api/orders", orderRoutes);
++app.use("/webhook", webhookRoutes);
++
++app.get("/api/health", (_, res) => res.json({ ok: true }));
++
++export default app;
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/config/db.ts
++import mongoose from "mongoose";
++
++const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/affordable";
++
++export default async function connectDB() {
++  await mongoose.connect(MONGO_URI);
++  console.log("Connected to MongoDB");
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/models/User.ts
++import mongoose, { Schema, Document } from "mongoose";
++
++export interface IUser extends Document {
++  email: string;
++  password: string;
++  name?: string;
++  role: "USER" | "ADMIN";
++  createdAt: Date;
++}
++
++const UserSchema: Schema = new Schema({
++  email: { type: String, required: true, unique: true, index: true },
++  password: { type: String, required: true },
++  name: { type: String },
++  role: { type: String, enum: ["USER", "ADMIN"], default: "USER" },
++  createdAt: { type: Date, default: Date.now }
++});
++
++export default mongoose.model<IUser>("User", UserSchema);
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/models/Product.ts
++import mongoose, { Schema, Document } from "mongoose";
++
++export interface IProduct extends Document {
++  name: string;
++  slug: string;
++  description?: string;
++  price: number;
++  sku?: string;
++  imageUrls: string[];
++  inventory: number;
++  category?: string;
++  createdAt: Date;
++}
++
++const ProductSchema: Schema = new Schema({
++  name: { type: String, required: true },
++  slug: { type: String, required: true, unique: true, index: true },
++  description: { type: String },
++  price: { type: Number, required: true },
++  sku: { type: String, unique: true, sparse: true },
++  imageUrls: { type: [String], default: [] },
++  inventory: { type: Number, default: 0 },
++  category: { type: String },
++  createdAt: { type: Date, default: Date.now }
++});
++
++export default mongoose.model<IProduct>("Product", ProductSchema);
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/models/Cart.ts
++import mongoose, { Schema, Document } from "mongoose";
++
++export interface ICartItem extends Document {
++  userId: string;
++  productId: string;
++  quantity: number;
++  addedAt: Date;
++}
++
++const CartItemSchema: Schema = new Schema({
++  userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
++  productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
++  quantity: { type: Number, default: 1 },
++  addedAt: { type: Date, default: Date.now }
++});
++
++export default mongoose.model<ICartItem>("CartItem", CartItemSchema);
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/models/Order.ts
++import mongoose, { Schema, Document } from "mongoose";
++
++export interface IOrderItem {
++  productId: string;
++  quantity: number;
++  unitPrice: number;
++}
++
++export interface IOrder extends Document {
++  userId: string;
++  items: IOrderItem[];
++  total: number;
++  status: string;
++  shippingAddress?: any;
++  paymentIntentId?: string;
++  createdAt: Date;
++}
++
++const OrderItemSchema: Schema = new Schema({
++  productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
++  quantity: { type: Number, required: true },
++  unitPrice: { type: Number, required: true }
++});
++
++const OrderSchema: Schema = new Schema({
++  userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
++  items: { type: [OrderItemSchema], required: true },
++  total: { type: Number, required: true },
++  status: { type: String, default: "PENDING" },
++  shippingAddress: { type: Schema.Types.Mixed },
++  paymentIntentId: { type: String },
++  createdAt: { type: Date, default: Date.now }
++});
++
++export default mongoose.model<IOrder>("Order", OrderSchema);
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/utils/generateToken.ts
++import jwt from "jsonwebtoken";
++
++const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
++
++export function generateToken(payload: object) {
++  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
++}
++
++export function verifyToken(token: string) {
++  try {
++    return jwt.verify(token, JWT_SECRET);
++  } catch {
++    return null;
++  }
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/middlewares/authMiddleware.ts
++import { Request, Response, NextFunction } from "express";
++import { verifyToken } from "../utils/generateToken";
++
++export interface AuthRequest extends Request {
++  userId?: string;
++  userRole?: string;
++}
++
++export function authGuard(req: AuthRequest, res: Response, next: NextFunction) {
++  const auth = req.headers.authorization;
++  if (!auth) return res.status(401).json({ error: "Missing Authorization header" });
++  const token = auth.split(" ")[1];
++  if (!token) return res.status(401).json({ error: "Invalid token" });
++  const payload: any = verifyToken(token);
++  if (!payload) return res.status(401).json({ error: "Invalid token" });
++  req.userId = payload.userId;
++  req.userRole = payload.role;
++  next();
++}
++
++export function adminGuard(req: AuthRequest, res: Response, next: NextFunction) {
++  if (req.userRole === "ADMIN") return next();
++  return res.status(403).json({ error: "Admin only" });
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/controllers/authController.ts
++import { Request, Response } from "express";
++import bcrypt from "bcrypt";
++import User from "../models/User";
++import { generateToken } from "../utils/generateToken";
++
++export async function signup(req: Request, res: Response) {
++  const { email, password, name } = req.body;
++  if (!email || !password) return res.status(400).json({ error: "email & password required" });
++  const existing = await User.findOne({ email });
++  if (existing) return res.status(409).json({ error: "Email already used" });
++  const hashed = await bcrypt.hash(password, 10);
++  const user = await User.create({ email, password: hashed, name });
++  const token = generateToken({ userId: user._id, role: user.role });
++  res.json({ token, user: { id: user._id, email: user.email, name: user.name } });
++}
++
++export async function login(req: Request, res: Response) {
++  const { email, password } = req.body;
++  if (!email || !password) return res.status(400).json({ error: "email & password required" });
++  const user = await User.findOne({ email });
++  if (!user) return res.status(401).json({ error: "Invalid credentials" });
++  const ok = await bcrypt.compare(password, user.password);
++  if (!ok) return res.status(401).json({ error: "Invalid credentials" });
++  const token = generateToken({ userId: user._id, role: user.role });
++  res.json({ token, user: { id: user._id, email: user.email, name: user.name } });
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/controllers/productController.ts
++import { Request, Response } from "express";
++import Product from "../models/Product";
++
++export async function listProducts(req: Request, res: Response) {
++  const { q, page = "1", limit = "20", category } = req.query as any;
++  const p = Math.max(1, Number(page));
++  const l = Math.max(1, Number(limit));
++  const skip = (p - 1) * l;
++  const filter: any = {};
++  if (q) filter.$or = [{ name: { $regex: q, $options: "i" } }, { description: { $regex: q, $options: "i" } }];
++  if (category) filter.category = category;
++  const [products, total] = await Promise.all([
++    Product.find(filter).sort({ createdAt: -1 }).skip(skip).limit(l),
++    Product.countDocuments(filter)
++  ]);
++  res.json({ products, total, page: p, limit: l });
++}
++
++export async function getProduct(req: Request, res: Response) {
++  const { id } = req.params;
++  const product = await Product.findById(id) || await Product.findOne({ slug: id });
++  if (!product) return res.status(404).json({ error: "Not found" });
++  res.json({ product });
++}
++
++export async function createProduct(req: Request, res: Response) {
++  const data = req.body;
++  const product = await Product.create(data);
++  res.json({ product });
++}
++
++export async function updateProduct(req: Request, res: Response) {
++  const { id } = req.params;
++  const product = await Product.findByIdAndUpdate(id, req.body, { new: true });
++  res.json({ product });
++}
++
++export async function deleteProduct(req: Request, res: Response) {
++  const { id } = req.params;
++  await Product.findByIdAndDelete(id);
++  res.json({ ok: true });
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/controllers/cartController.ts
++import { Request, Response } from "express";
++import CartItem from "../models/Cart";
++import Product from "../models/Product";
++
++export async function addToCart(req: Request, res: Response) {
++  const userId = (req as any).userId;
++  const { productId, quantity = 1 } = req.body;
++  const product = await Product.findById(productId);
++  if (!product) return res.status(404).json({ error: "Product not found" });
++  const existing = await CartItem.findOne({ userId, productId });
++  if (existing) {
++    existing.quantity += Number(quantity);
++    await existing.save();
++    return res.json({ item: existing });
++  }
++  const item = await CartItem.create({ userId, productId, quantity: Number(quantity) });
++  res.json({ item });
++}
++
++export async function getCart(req: Request, res: Response) {
++  const userId = (req as any).userId;
++  const items = await CartItem.find({ userId }).populate("productId");
++  // normalize product in response
++  const mapped = items.map(it => ({ id: it._id, product: (it as any).productId, quantity: it.quantity }));
++  res.json({ items: mapped });
++}
++
++export async function removeCartItem(req: Request, res: Response) {
++  const { id } = req.params;
++  await CartItem.findByIdAndDelete(id);
++  res.json({ ok: true });
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/controllers/orderController.ts
++import { Request, Response } from "express";
++import CartItem from "../models/Cart";
++import Order from "../models/Order";
++import Product from "../models/Product";
++import StripeService from "../services/stripeService";
++
++export async function createOrder(req: Request, res: Response) {
++  const userId = (req as any).userId;
++  const { shippingAddress, paymentIntentId } = req.body;
++
++  const cartItems = await CartItem.find({ userId }).populate("productId");
++  if (!cartItems.length) return res.status(400).json({ error: "Cart is empty" });
++
++  const items = cartItems.map(ci => ({
++    productId: (ci as any).productId._id,
++    quantity: ci.quantity,
++    unitPrice: (ci as any).productId.price
++  }));
++  const total = items.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
++
++  // If paymentIntentId provided, verify (optional)
++  if (paymentIntentId) {
++    const verified = await StripeService.verifyPaymentIntent(paymentIntentId);
++    if (!verified) return res.status(400).json({ error: "Payment not verified" });
++  }
++
++  const order = await Order.create({
++    userId,
++    items,
++    total,
++    status: paymentIntentId ? "PAID" : "PENDING",
++    shippingAddress,
++    paymentIntentId
++  });
++
++  // decrement inventory
++  await Promise.all(items.map(it => Product.findByIdAndUpdate(it.productId, { $inc: { inventory: -it.quantity } })));
++
++  // clear cart
++  await CartItem.deleteMany({ userId });
++
++  res.json({ order });
++}
++
++export async function listOrders(req: Request, res: Response) {
++  const userId = (req as any).userId;
++  const orders = await Order.find({ userId }).sort({ createdAt: -1 });
++  res.json({ orders });
++}
++
++export async function getOrder(req: Request, res: Response) {
++  const { id } = req.params;
++  const order = await Order.findById(id);
++  if (!order) return res.status(404).json({ error: "Not found" });
++  res.json({ order });
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/routes/authRoutes.ts
++import { Router } from "express";
++import { signup, login } from "../controllers/authController";
++
++const router = Router();
++router.post("/signup", signup);
++router.post("/login", login);
++export default router;
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/routes/productRoutes.ts
++import { Router } from "express";
++import * as ctrl from "../controllers/productController";
++import { authGuard, adminGuard } from "../middlewares/authMiddleware";
++
++const router = Router();
++router.get("/", ctrl.listProducts);
++router.get("/:id", ctrl.getProduct);
++router.post("/", authGuard, adminGuard, ctrl.createProduct);
++router.put("/:id", authGuard, adminGuard, ctrl.updateProduct);
++router.delete("/:id", authGuard, adminGuard, ctrl.deleteProduct);
++export default router;
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/routes/cartRoutes.ts
++import { Router } from "express";
++import * as ctrl from "../controllers/cartController";
++import { authGuard } from "../middlewares/authMiddleware";
++
++const router = Router();
++router.post("/add", authGuard, ctrl.addToCart);
++router.get("/", authGuard, ctrl.getCart);
++router.delete("/:id", authGuard, ctrl.removeCartItem);
++export default router;
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/routes/orderRoutes.ts
++import { Router } from "express";
++import * as ctrl from "../controllers/orderController";
++import { authGuard } from "../middlewares/authMiddleware";
++
++const router = Router();
++router.post("/", authGuard, ctrl.createOrder);
++router.get("/", authGuard, ctrl.listOrders);
++router.get("/:id", authGuard, ctrl.getOrder);
++export default router;
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/services/stripeService.ts
++import Stripe from "stripe";
++
++const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", { apiVersion: "2024-11-15" as any });
++
++export default {
++  async createPaymentIntent(amount: number, currency = "inr") {
++    return stripe.paymentIntents.create({
++      amount: Math.round(amount * 100),
++      currency,
++      automatic_payment_methods: { enabled: true }
++    });
++  },
++  async verifyPaymentIntent(id: string) {
++    try {
++      const pi = await stripe.paymentIntents.retrieve(id);
++      return pi.status === "succeeded" || pi.status === "requires_capture" || pi.status === "requires_confirmation";
++    } catch {
++      return false;
++    }
++  },
++  stripe
++};
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/src/routes/webhookRoutes.ts
++import { Router, Request, Response } from "express";
++import Stripe from "stripe";
++import StripeService from "../services/stripeService";
++import Order from "../models/Order";
++
++const router = Router();
++
++router.post("/", (req: Request, res: Response) => {
++  const sig = (req.headers["stripe-signature"] || "") as string;
++  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
++  if (!webhookSecret) return res.status(400).send("Webhook secret not configured");
++  let event: Stripe.Event;
++  try {
++    event = StripeService.stripe.webhooks.constructEvent(req.body as Buffer, sig, webhookSecret);
++  } catch (err: any) {
++    console.error("Webhook signature error", err.message);
++    return res.status(400).send(`Webhook Error: ${err.message}`);
++  }
++
++  // Handle events
++  switch (event.type) {
++    case "payment_intent.succeeded":
++      {
++        const pi = event.data.object as Stripe.PaymentIntent;
++        // find order by paymentIntentId and mark paid
++        Order.findOneAndUpdate({ paymentIntentId: pi.id }, { status: "PAID" }).exec();
++      }
++      break;
++    case "payment_intent.payment_failed":
++      {
++        const pi = event.data.object as Stripe.PaymentIntent;
++        Order.findOneAndUpdate({ paymentIntentId: pi.id }, { status: "CANCELLED" }).exec();
++      }
++      break;
++    default:
++      break;
++  }
++
++  res.json({ received: true });
++});
++
++export default router;
++
+*** End Patch
+*** Begin Patch
+*** Add File: ecom-backend/README.md
++# Affordable India - Backend (MongoDB + Mongoose)
++
++## Quick start (local)
++
++1. Create `.env` with `MONGO_URI`, `JWT_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
++2. Install deps:
++   ```
++   cd ecom-backend
++   npm install
++   ```
++3. Start dev server:
++   ```
++   npm run dev
++   ```
++4. API:
++   - `POST /api/auth/signup` — { email, password, name }
++   - `POST /api/auth/login` — { email, password }
++   - `GET /api/products`
++   - `POST /api/cart/add` (protected)
++   - `POST /api/orders` (protected)
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/lib/api.ts
++// Frontend: tiny fetch wrapper for backend API
++export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000/api";
++
++type FetchOpts = RequestInit & { auth?: string };
++
++async function request<T = any>(path: string, opts: FetchOpts = {}): Promise<T> {
++  const headers: Record<string, string> = {
++    "Content-Type": "application/json",
++    ...(opts.headers || {})
++  };
++  if (opts.auth) headers["Authorization"] = `Bearer ${opts.auth}`;
++  const res = await fetch(`${API_BASE}${path}`, {
++    ...opts,
++    headers,
++    body: opts.body ? JSON.stringify(opts.body) : undefined
++  });
++  if (!res.ok) {
++    const text = await res.text().catch(() => "");
++    try {
++      const json = JSON.parse(text);
++      throw json;
++    } catch {
++      throw { message: text || "Request failed", status: res.status };
++    }
++  }
++  return res.status === 204 ? (null as any) : (await res.json());
++}
++
++export default { request };
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/hooks/useAuth.ts
++import { useState } from "react";
++import api from "../lib/api";
++
++const TOKEN_KEY = "affordable_token";
++const USER_KEY = "affordable_user";
++
++export function useAuth() {
++  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
++  const [user, setUser] = useState<any>(() => {
++    const s = localStorage.getItem(USER_KEY);
++    return s ? JSON.parse(s) : null;
++  });
++
++  async function signup(email: string, password: string, name?: string) {
++    const res: any = await api.request("/auth/signup", { method: "POST", body: { email, password, name } });
++    localStorage.setItem(TOKEN_KEY, res.token);
++    localStorage.setItem(USER_KEY, JSON.stringify(res.user));
++    setToken(res.token);
++    setUser(res.user);
++    return res;
++  }
++
++  async function login(email: string, password: string) {
++    const res: any = await api.request("/auth/login", { method: "POST", body: { email, password } });
++    localStorage.setItem(TOKEN_KEY, res.token);
++    localStorage.setItem(USER_KEY, JSON.stringify(res.user));
++    setToken(res.token);
++    setUser(res.user);
++    return res;
++  }
++
++  function logout() {
++    localStorage.removeItem(TOKEN_KEY);
++    localStorage.removeItem(USER_KEY);
++    setToken(null);
++    setUser(null);
++  }
++
++  return { token, user, signup, login, logout };
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/hooks/useProducts.ts
++import { useEffect, useState } from "react";
++import api from "../lib/api";
++
++export function useProducts({ q = "", page = 1, limit = 20 } = {}) {
++  const [products, setProducts] = useState<any[]>([]);
++  const [loading, setLoading] = useState(true);
++  useEffect(() => {
++    let mounted = true;
++    setLoading(true);
++    const qs = new URLSearchParams();
++    if (q) qs.set("q", q);
++    qs.set("page", String(page));
++    qs.set("limit", String(limit));
++    api.request(`/products?${qs.toString()}`)
++      .then((res: any) => { if (!mounted) return; setProducts(res.products || []); })
++      .catch(console.error)
++      .finally(() => { if (mounted) setLoading(false); });
++    return () => { mounted = false; };
++  }, [q, page, limit]);
++  return { products, loading };
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/hooks/useCart.ts
++import { useEffect, useState } from "react";
++import api from "../lib/api";
++
++const TOKEN_KEY = "affordable_token";
++
++export function useCart() {
++  const [items, setItems] = useState<any[]>([]);
++  const [loading, setLoading] = useState(true);
++  const token = localStorage.getItem(TOKEN_KEY);
++
++  async function reload() {
++    if (!token) { setItems([]); setLoading(false); return; }
++    setLoading(true);
++    try {
++      const res: any = await api.request("/cart", { method: "GET", auth: token });
++      setItems(res.items || []);
++    } catch (err) {
++      console.error(err);
++      setItems([]);
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  useEffect(() => { reload(); }, [token]);
++
++  async function add(productId: string, quantity = 1) {
++    const res = await api.request("/cart/add", { method: "POST", body: { productId, quantity }, auth: token! });
++    await reload();
++    return res;
++  }
++
++  async function remove(id: string) {
++    await api.request(`/cart/${id}`, { method: "DELETE", auth: token! });
++    await reload();
++  }
++
++  return { items, loading, reload, add, remove };
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/hooks/useCheckout.ts
++import api from "../lib/api";
++
++const TOKEN_KEY = "affordable_token";
++
++export function useCheckout() {
++  const token = localStorage.getItem(TOKEN_KEY);
++
++  async function createPaymentIntent(amount: number) {
++    // backend endpoint could create a payment intent; for now call Stripe via backend if implemented
++    const res = await api.request("/orders/create-payment-intent", { method: "POST", body: { amount }, auth: token! }).catch(() => null);
++    return res;
++  }
++
++  async function placeOrder(shippingAddress: any, paymentIntentId?: string) {
++    const res = await api.request("/orders", { method: "POST", body: { shippingAddress, paymentIntentId }, auth: token! });
++    return res;
++  }
++
++  return { createPaymentIntent, placeOrder };
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/pages/Login.tsx
++import React, { useState } from "react";
++import { useAuth } from "../hooks/useAuth";
++
++export default function LoginPage() {
++  const { login } = useAuth();
++  const [email, setEmail] = useState("");
++  const [password, setPassword] = useState("");
++  const [err, setErr] = useState("");
++
++  async function submit(e: React.FormEvent) {
++    e.preventDefault();
++    try {
++      await login(email, password);
++      // redirect or update UI
++    } catch (e: any) {
++      setErr(e?.message || "Login failed");
++    }
++  }
++
++  return (
++    <form onSubmit={submit} className="max-w-md mx-auto p-4">
++      <h2 className="text-xl font-bold mb-4">Login</h2>
++      <input className="w-full mb-2 p-2 border" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
++      <input className="w-full mb-2 p-2 border" placeholder="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} />
++      {err && <div className="text-red-600 mb-2">{err}</div>}
++      <button className="px-4 py-2 bg-blue-600 text-white">Sign in</button>
++    </form>
++  );
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/pages/Products.tsx
++import React from "react";
++import { useProducts } from "../hooks/useProducts";
++import { useCart } from "../hooks/useCart";
++
++export default function ProductsPage() {
++  const { products, loading } = useProducts();
++  const cart = useCart();
++
++  if (loading) return <div>Loading...</div>;
++  return (
++    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
++      {products.map((p: any) => (
++        <div key={p._id} className="border rounded p-3 flex flex-col">
++          <img src={p.imageUrls?.[0] || "/placeholder.png"} className="w-full h-40 object-cover mb-2" />
++          <div className="font-semibold">{p.name}</div>
++          <div className="text-sm mb-2">{p.description}</div>
++          <div className="mt-auto flex items-center justify-between">
++            <div className="font-bold">₹{p.price.toFixed(2)}</div>
++            <button onClick={() => cart.add(p._id, 1)} className="px-3 py-1 bg-green-600 text-white rounded">Add</button>
++          </div>
++        </div>
++      ))}
++    </div>
++  );
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/pages/Cart.tsx
++import React from "react";
++import { useCart } from "../hooks/useCart";
++
++export default function CartPage() {
++  const { items, loading, remove } = useCart();
++  if (loading) return <div>Loading cart...</div>;
++  const total = items.reduce((s: number, it: any) => s + it.product.price * it.quantity, 0);
++  return (
++    <div className="p-4 max-w-3xl mx-auto">
++      <h2 className="text-xl mb-4">Your Cart</h2>
++      <div className="space-y-4">
++        {items.map((it: any) => (
++          <div key={it.id} className="flex items-center gap-4 border p-3 rounded">
++            <img src={it.product.imageUrls?.[0] || "/placeholder.png"} className="w-20 h-20 object-cover" />
++            <div className="flex-1">
++              <div className="font-medium">{it.product.name}</div>
++              <div>Qty: {it.quantity}</div>
++            </div>
++            <div className="text-right">
++              <div className="font-bold">₹{(it.product.price * it.quantity).toFixed(2)}</div>
++              <button onClick={() => remove(it.id)} className="text-sm text-red-600">Remove</button>
++            </div>
++          </div>
++        ))}
++      </div>
++      <div className="mt-4 flex justify-between items-center">
++        <div className="font-bold">Total: ₹{total.toFixed(2)}</div>
++        <a href="/checkout" className="px-4 py-2 bg-blue-600 text-white rounded">Checkout</a>
++      </div>
++    </div>
++  );
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/pages/Checkout.tsx
++import React, { useState } from "react";
++import { useCheckout } from "../hooks/useCheckout";
++
++export default function CheckoutPage() {
++  const { placeOrder } = useCheckout();
++  const [address, setAddress] = useState("");
++  const [loading, setLoading] = useState(false);
++
++  async function submit(e: React.FormEvent) {
++    e.preventDefault();
++    setLoading(true);
++    try {
++      const res: any = await placeOrder({ address });
++      alert("Order placed: " + res.order._id);
++      // redirect to orders page if any
++    } catch (err: any) {
++      alert(err?.message || "Checkout failed");
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  return (
++    <form onSubmit={submit} className="max-w-lg mx-auto p-4">
++      <h2 className="text-xl mb-4">Checkout</h2>
++      <textarea required value={address} onChange={e => setAddress(e.target.value)} className="w-full h-32 border p-2 mb-4" />
++      <button disabled={loading} className="px-4 py-2 bg-green-600 text-white rounded">{loading ? "Placing..." : "Place order"}</button>
++    </form>
++  );
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: .gitignore
++node_modules
++ecom-backend/node_modules
++*.log
++.env
++.DS_Store
++
+*** End Patch
+*** Begin Patch
+*** Add File: README_PATCH_APPLY.md
++How to apply the patch:
++
++1. Save the patch content into a file named `backend-integration.patch`
++2. From your repo root:
++
++```bash
++git checkout -b feature/backend-integration
++git apply backend-integration.patch
++git add .
++git commit -m "feat: add backend + frontend integration (MongoDB, Stripe)"
++git push origin feature/backend-integration
++```
++
++3. Create a Pull Request from `feature/backend-integration` into `main` on GitHub and review before merging.
++
++Notes:
++- Configure environment variables in a `.env` file at the project root (or in your deployment): MONGO_URI, JWT_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, PORT
++- Install dependencies for backend:
++  ```
++  cd ecom-backend
++  npm install
++  npm run dev
++  ```
++
+*** End Patch
+
